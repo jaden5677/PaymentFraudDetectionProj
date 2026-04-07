@@ -16,7 +16,19 @@ Key Features:
 
 Unlike Dataset 3, this dataset has NO Time column, so we use k-Stratified Fold Cross Validation
 (k=10) instead of time-based splitting. Stratification ensures each fold preserves the original
-fraud-to-legitimate ratio, which is critical for severely imbalanced datasets.
+fraud-to-legitimate ratio.
+
+IMPORTANT INFO ON CLASS BALANCE:
+  Unlike most real-world fraud datasets, this Kaggle dataset has been PRE-BALANCED by the
+  publisher — it contains a near-perfect 50/50 split between fraudulent and legitimate
+  transactions (284,315 legit vs 284,314 fraud). This means SMOTE is NOT needed here.
+  In Datasets 1 and 3, fraud makes up <1% of transactions, requiring SMOTE to prevent
+  the model from defaulting to "predict everything as legitimate." Here, the model sees
+  equal numbers of both classes naturally.
+
+  This is a valuable discussion point: comparing FFNN performance on a balanced dataset
+  (Dataset 2) vs. SMOTE-augmented imbalanced datasets (Datasets 1 & 3) reveals how
+  class distribution affects model behaviour.
 
 Algorithms implemented:
   - Feed-Forward Neural Network (FFNN)
@@ -31,14 +43,10 @@ Mathematical Objective (FFNN):
 
 Evaluation Metrics:
   - Precision, Recall, F1, MCC, AUC-ROC
-  - DO NOT use Accuracy — it is misleading on imbalanced datasets
-    (e.g., predicting all transactions as legitimate would give ~99.5% accuracy)
 
 Preprocessing:
   - StandardScaler: fit on training fold only, transform both train and test
-  - SMOTE: applied to training fold only (never test) to avoid data leakage
-    SMOTE creates synthetic minority samples by interpolating between nearest neighbours,
-    which balances the classes for training without fabricating test data
+  - No SMOTE needed — dataset is already balanced (50/50 split)
 
 References:
   - Dataset: https://www.kaggle.com/datasets/nelgiriyewithana/credit-card-fraud-detection-dataset-2023
@@ -70,8 +78,6 @@ from sklearn.metrics import (
     classification_report,
     roc_curve,
 )
-from imblearn.over_sampling import SMOTE
-
 import kagglehub
 from kagglehub import KaggleDatasetAdapter
 
@@ -84,7 +90,7 @@ is scattered across the codebase.
 ── FFNN Hyperparameters ──
 These control the architecture and training behaviour of the neural network.
 Chosen to balance model capacity (enough neurons to learn fraud patterns) with
-regularisation (dropout + weight decay to prevent overfitting on SMOTE-augmented data).
+regularisation (dropout + weight decay to prevent overfitting).
 '''
 RANDOM_STATE = 42          # Seed for all random operations — ensures reproducibility
 N_FOLDS = 10               # Number of stratified cross-validation folds
@@ -174,18 +180,20 @@ def load_data():
 '''
 SECTION 2: CLASS DISTRIBUTION ANALYSIS
 This section analyses the balance between fraudulent and legitimate
-transactions. For fraud detection, class imbalance is THE central
-challenge — if only 0.17% of transactions are fraud, a model that
-predicts everything as legitimate gets 99.83% accuracy but catches
-zero fraud. That's why:
-   1. We visualise the imbalance (bar chart + pie chart)
-   2. We use SMOTE later to balance training data
-   3. We use metrics like MCC and AUC-ROC that aren't fooled by imbalance
+transactions. Unlike Datasets 1 and 3 where class imbalance is the
+central challenge (<1% fraud), this dataset has been pre-balanced by
+the Kaggle publisher — it contains a near-perfect 50/50 split.
+
+This is unusual for real-world fraud data and has major implications:
+   1. SMOTE is NOT needed — the classes are already balanced
+   2. The model won't default to "predict all legitimate" since it sees
+      equal numbers of both classes during training
+   3. Accuracy becomes a more meaningful metric here (unlike imbalanced
+      datasets), though we still use MCC and AUC-ROC for consistency
+      with Datasets 1 and 3
 
 The bar chart shows raw counts with percentages annotated above each bar.
-The pie chart uses 'explode' on the fraud slice because without it the
-fraud slice is so thin it's literally invisible (learned this the hard way
-on Dataset 3).
+The pie chart confirms the 50/50 split visually.
 '''
 
 
@@ -203,7 +211,7 @@ def analyse_class_distribution(df):
 
     print(f"  Legitimate (0): {class_counts[0]:>8,}  ({class_pct[0]:.4f}%)")
     print(f"  Fraudulent (1): {class_counts[1]:>8,}  ({class_pct[1]:.4f}%)")
-    print(f"  Imbalance ratio: 1 : {class_counts[0] / class_counts[1]:.0f}")
+    print(f"  Ratio: 1 : {class_counts[0] / class_counts[1]:.2f}  (near-perfect balance)")
 
     colors = ["#2ecc71", "#e74c3c"]
     labels = ["Legitimate (0)", "Fraudulent (1)"]
@@ -217,14 +225,14 @@ def analyse_class_distribution(df):
     for i, (cnt, pct) in enumerate(zip(class_counts.values, class_pct.values)):
         axes[0].text(i, cnt + cnt * 0.01, f"{cnt:,}\n({pct:.3f}%)", ha="center", fontsize=10)
 
-    # Pie chart — explode the fraud slice so it's actually visible
+    # Pie chart — no explode needed since both slices are ~equal
     axes[1].pie(
         class_counts.values, labels=labels, colors=colors,
-        autopct="%1.3f%%", startangle=90, explode=(0, 0.1),
+        autopct="%1.3f%%", startangle=90,
     )
     axes[1].set_title("Class Proportion", fontsize=14, fontweight="bold")
 
-    fig.suptitle("Class Imbalance in Dataset 2 (Credit Card Fraud 2023)", fontsize=16, fontweight="bold", y=1.02)
+    fig.suptitle("Class Distribution in Dataset 2 (Credit Card Fraud 2023)", fontsize=16, fontweight="bold", y=1.02)
     fig.tight_layout()
     save_fig(fig, "01_class_distribution.png")
 
@@ -461,10 +469,10 @@ load_data(). No additional feature engineering is needed because the
 V features are already PCA-transformed and scaled relative to each other.
 
 The Amount column will be StandardScaled along with the V features
-during the train/test split pipeline, because SMOTE (which we apply
-next) uses Euclidean distance to find nearest neighbours — if Amount
-is on a different scale than the V features, SMOTE would generate
-synthetic samples biased toward the Amount axis.
+during the train/test split pipeline. Scaling ensures all features
+contribute equally to gradient descent in the neural network — without
+scaling, Amount (which has a different magnitude than the PCA components)
+would dominate the learning process.
 '''
 
 def prepare_features(df):
@@ -495,8 +503,8 @@ with k=10, which is the standard approach for non-temporal classification
 tasks (as recommended in the course ML Experiments material).
 
 Stratified means each fold preserves the original fraud/legitimate ratio.
-Without stratification, some folds might end up with zero fraud samples
-(because fraud is so rare), which would make evaluation meaningless.
+With the 50/50 balance in this dataset, stratification ensures each fold
+gets roughly equal numbers of fraud and legitimate transactions.
 
 The 10-fold setup gives us 10 independent train/test splits where each
 sample appears in the test set exactly once. This produces 10 metric
@@ -530,34 +538,36 @@ def create_stratified_splits(X, y):
 
 
 '''
-SECTION 8: SMOTE DEMONSTRATION (Fold 1)
+SECTION 8: CLASS BALANCE VERIFICATION & SCALING DEMONSTRATION (Fold 1)
 
-SMOTE (Synthetic Minority Over-sampling Technique) creates synthetic
+In Datasets 1 and 3, this section would apply SMOTE (Synthetic Minority
+Over-sampling Technique) to balance the classes. SMOTE creates synthetic
 fraud samples by interpolating between existing fraud samples and their
-k nearest neighbours. For each real fraud sample, SMOTE:
-  1. Finds its k nearest neighbours (also fraud)
-  2. Picks one at random
-  3. Creates a new synthetic sample at a random point on the line
-     segment between the original and its neighbour
+k nearest neighbours, giving the model equal exposure to both classes.
 
-This balances the classes in the training set, giving the model equal
-exposure to both classes during training. Without SMOTE, the model
-would be overwhelmed by legitimate transactions and learn to predict
-everything as legitimate (the "accuracy trap").
+However, Dataset 2 is ALREADY BALANCED (50/50 split), so SMOTE is
+not needed. Applying SMOTE to already-balanced data would just generate
+unnecessary synthetic samples that add noise without improving the
+class distribution.
 
-CRITICAL: SMOTE is applied ONLY to training data. If we SMOTE'd the
-test set, we'd be evaluating on synthetic data that doesn't exist in
-reality — this is a form of data leakage that would inflate metrics.
+Instead, this section:
+  1. Verifies the class balance in the training fold
+  2. Demonstrates the StandardScaler transformation
+  3. Visualises the training and test class distributions to confirm balance
 
-We demonstrate on Fold 1 to show the before/after class balance.
+StandardScaler is still critical here — it centres each feature to
+mean=0, std=1 which ensures the neural network's gradient descent
+converges efficiently (features on different scales would cause
+the optimiser to oscillate rather than converge smoothly).
 '''
 
-def demonstrate_smote(splits, X, y, colors, labels):
+def demonstrate_scaling(splits, X, y, colors, labels):
     """
-    Demonstrate SMOTE resampling on Fold 1 with before/after visualisation.
+    Demonstrate feature scaling on Fold 1 and verify class balance.
+    SMOTE is NOT applied because the dataset is already balanced.
     """
     print("\n" + "=" * 60)
-    print("8. FEATURE SCALING & SMOTE DEMONSTRATION (Fold 1)")
+    print("8. FEATURE SCALING & CLASS BALANCE VERIFICATION (Fold 1)")
     print("=" * 60)
 
     train_idx, test_idx = splits[0]
@@ -568,42 +578,45 @@ def demonstrate_smote(splits, X, y, colors, labels):
     y_test = y.iloc[test_idx]
 
     # StandardScaler: fit on train, transform both
-    # This centres each feature to mean=0, std=1 which is critical for:
-    #   1. SMOTE's distance calculations (equal weight per feature)
-    #   2. Neural network convergence (gradient descent works better with normalised inputs)
+    # This centres each feature to mean=0, std=1 which is critical for
+    # neural network convergence (gradient descent works better with normalised inputs)
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train_raw)
     X_test_scaled = scaler.transform(X_test_raw)
 
-    print(f"  Train shape before SMOTE: {X_train_scaled.shape}  (fraud={y_train.sum()}, legit={len(y_train) - y_train.sum()})")
+    train_fraud = y_train.sum()
+    train_legit = len(y_train) - train_fraud
+    test_fraud = y_test.sum()
+    test_legit = len(y_test) - test_fraud
 
-    smote = SMOTE(random_state=RANDOM_STATE)
-    X_train_resampled, y_train_resampled = smote.fit_resample(X_train_scaled, y_train)
+    print(f"  Train shape: {X_train_scaled.shape}  (fraud={train_fraud:,}, legit={train_legit:,})")
+    print(f"  Test  shape: {X_test_scaled.shape}  (fraud={test_fraud:,}, legit={test_legit:,})")
+    print(f"  Train fraud ratio: {train_fraud / len(y_train) * 100:.2f}%")
+    print(f"  Test  fraud ratio: {test_fraud / len(y_test) * 100:.2f}%")
+    print(f"\n  → Dataset is already balanced — SMOTE not applied")
+    print(f"    (In Datasets 1 & 3, SMOTE would be needed here to balance <1% fraud)")
 
-    print(f"  Train shape after  SMOTE: {X_train_resampled.shape}  (fraud={y_train_resampled.sum()}, legit={len(y_train_resampled) - y_train_resampled.sum()})")
-    print(f"  Test  shape (untouched):  {X_test_scaled.shape}  (fraud={y_test.sum()}, legit={len(y_test) - y_test.sum()})")
-
-    # Before/after SMOTE bar chart
+    # Training vs test class distribution bar chart
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
-    before_counts = y_train.value_counts().sort_index()
-    after_counts = pd.Series(y_train_resampled).value_counts().sort_index()
+    train_counts = y_train.value_counts().sort_index()
+    test_counts = y_test.value_counts().sort_index()
 
-    axes[0].bar(labels, before_counts.values, color=colors, edgecolor="black")
-    axes[0].set_title("Training Set BEFORE SMOTE", fontsize=13, fontweight="bold")
+    axes[0].bar(labels, train_counts.values, color=colors, edgecolor="black")
+    axes[0].set_title("Training Set (Fold 1)", fontsize=13, fontweight="bold")
     axes[0].set_ylabel("Count")
-    for i, cnt in enumerate(before_counts.values):
+    for i, cnt in enumerate(train_counts.values):
         axes[0].text(i, cnt + cnt * 0.01, f"{cnt:,}", ha="center", fontsize=10)
 
-    axes[1].bar(labels, after_counts.values, color=colors, edgecolor="black")
-    axes[1].set_title("Training Set AFTER SMOTE", fontsize=13, fontweight="bold")
+    axes[1].bar(labels, test_counts.values, color=colors, edgecolor="black")
+    axes[1].set_title("Test Set (Fold 1)", fontsize=13, fontweight="bold")
     axes[1].set_ylabel("Count")
-    for i, cnt in enumerate(after_counts.values):
+    for i, cnt in enumerate(test_counts.values):
         axes[1].text(i, cnt + cnt * 0.01, f"{cnt:,}", ha="center", fontsize=10)
 
-    fig.suptitle("SMOTE Resampling Effect on Class Balance (Fold 1)", fontsize=16, fontweight="bold", y=1.02)
+    fig.suptitle("Class Balance Verification — No SMOTE Needed (Fold 1)", fontsize=16, fontweight="bold", y=1.02)
     fig.tight_layout()
-    save_fig(fig, "08_smote_effect.png")
+    save_fig(fig, "08_class_balance_verification.png")
 
 
 '''
@@ -624,7 +637,7 @@ def print_preprocessing_summary(df, n_splits):
   Features used:         V1–V28 + Amount (29 features)
   Features excluded:     id (sequential index, not informative)
   Scaling:               StandardScaler (fit on train fold, transform both)
-  Class balancing:       SMOTE (applied to training folds only)
+  Class balancing:       Not needed (dataset is pre-balanced at 50/50)
   Validation strategy:   {n_splits}-fold Stratified Cross Validation
   Evaluation metrics:    Precision, Recall, F1, MCC, AUC-ROC
 
@@ -634,24 +647,29 @@ def print_preprocessing_summary(df, n_splits):
 
 
 '''
-SECTION 10: SCALE AND RESAMPLE UTILITY
+SECTION 10: SCALE UTILITY
 
 This is a shared utility function used by the FFNN (and any future
-algorithms like LR or RF) to consistently scale features and apply
-SMOTE for a given train/test split.
+algorithms like LR or RF) to consistently scale features for a given
+train/test split.
 
-Why scale before SMOTE? SMOTE relies on Euclidean distance to find
-nearest neighbours. If features aren't scaled, the distance calculation
-is dominated by whichever feature has the largest magnitude — the
-synthetic points would cluster along the Amount axis and ignore the
-V-features. Scaling first ensures all features contribute equally.
+Why scale? Neural networks are sensitive to feature magnitudes because
+gradient descent updates are proportional to feature values. If Amount
+is in the thousands while V-features are near zero, the gradients for
+Amount-connected weights would dominate training. StandardScaler
+normalises all features to mean=0, std=1, ensuring equal contribution.
+
+Note: Unlike Datasets 1 and 3, we do NOT apply SMOTE here because
+the dataset is already balanced (50/50). SMOTE on balanced data would
+just add synthetic noise without improving the class distribution.
 '''
 
-def scale_and_resample(X, y, train_idx, test_idx):
+def scale_split(X, y, train_idx, test_idx):
     """
-    Scale features (fit on train only) and apply SMOTE to the training set.
+    Scale features (fit on train only).
+    No SMOTE applied — dataset is already balanced.
 
-    Returns: X_train_res, y_train_res, X_test_scaled, y_test, scaler
+    Returns: X_train_scaled, y_train, X_test_scaled, y_test, scaler
     """
     feature_names = X.columns.tolist()
 
@@ -672,10 +690,7 @@ def scale_and_resample(X, y, train_idx, test_idx):
         index=X_test_raw.index,
     )
 
-    smote = SMOTE(random_state=RANDOM_STATE)
-    X_train_res, y_train_res = smote.fit_resample(X_train_scaled, y_train)
-
-    return X_train_res, y_train_res, X_test_scaled, y_test, scaler
+    return X_train_scaled, y_train, X_test_scaled, y_test, scaler
 
 
 '''
@@ -703,9 +718,11 @@ AUC-ROC:    Area under the ROC curve — measures how well the model's
             possible thresholds, not just 0.5. AUC=0.5 means random,
             AUC=1.0 means perfect separation.
 
-We explicitly DO NOT use Accuracy because it's misleading on imbalanced
-data — predicting everything as legitimate gives ~99.5% accuracy but
-catches zero fraud.
+We still use MCC and AUC-ROC (rather than just Accuracy) for consistency
+with Datasets 1 and 3, where Accuracy IS misleading due to severe
+class imbalance. On this balanced dataset, Accuracy would actually be
+a fair metric, but MCC and AUC-ROC provide richer information about
+model performance regardless of class distribution.
 '''
 
 def compute_metrics(y_true, y_pred, y_prob):
@@ -859,8 +876,7 @@ unit variance, which stabilises training and acts as mild regularisation.
 
 Dropout randomly zeroes 30% of neurons during training, forcing the
 network to learn redundant representations — this prevents overfitting,
-which is especially important since SMOTE creates synthetic training
-samples that might not perfectly represent real-world fraud patterns.
+especially when training on a large dataset (568K+ samples).
 
 The output is a single neuron with Sigmoid activation, producing a
 probability in [0,1]. Transactions with probability >= 0.5 are
@@ -1016,11 +1032,13 @@ def predict_nn(model, X_test):
 SECTION 16: FFNN — TRAINING & EVALUATION ACROSS ALL FOLDS
 
 This is the main experiment loop. For each of the 10 stratified folds:
-  1. Scale features (StandardScaler fit on train) and apply SMOTE to training set only
+  1. Scale features (StandardScaler fit on train, transform both)
   2. Train a fresh FFNN from scratch (weights reinitialised each fold)
-  3. Predict on the scaled (but not SMOTE'd) test set
+  3. Predict on the scaled test set
   4. Compute all 5 evaluation metrics
   5. Store predictions for later visualisation (avoids expensive re-training)
+
+No SMOTE is applied — the dataset is already balanced (50/50).
 
 A fresh model is trained per fold because:
   - Each fold has different train/test data
@@ -1056,15 +1074,15 @@ def train_and_evaluate_nn(splits, X, y):
     for fold_num, (train_idx, test_idx) in enumerate(splits, start=1):
         print(f"\n  ── Fold {fold_num}/{N_FOLDS} ──")
 
-        # Scale and resample using the shared utility
-        X_train_res, y_train_res, X_test_scaled, y_test, _ = scale_and_resample(
+        # Scale features using the shared utility (no SMOTE — dataset is balanced)
+        X_train_scaled, y_train, X_test_scaled, y_test, _ = scale_split(
             X, y, train_idx, test_idx,
         )
 
-        print(f"    Train: {len(X_train_res):,} samples (after SMOTE)  |  Test: {len(X_test_scaled):,} samples")
+        print(f"    Train: {len(X_train_scaled):,} samples  |  Test: {len(X_test_scaled):,} samples")
 
         # Train a fresh model for this fold
-        model, epoch_losses = train_nn(X_train_res, y_train_res, input_dim)
+        model, epoch_losses = train_nn(X_train_scaled, y_train, input_dim)
         y_pred, y_prob = predict_nn(model, X_test_scaled)
 
         # Compute the 5 evaluation metrics
@@ -1164,8 +1182,8 @@ if __name__ == "__main__":
     # -- 7. Cross-Validation Setup --
     splits = create_stratified_splits(X, y)
 
-    # -- 8. SMOTE Demonstration --
-    demonstrate_smote(splits, X, y, colors, labels)
+    # -- 8. Scaling & Class Balance Verification --
+    demonstrate_scaling(splits, X, y, colors, labels)
 
     # -- 9. Summary --
     print_preprocessing_summary(df, N_FOLDS)
